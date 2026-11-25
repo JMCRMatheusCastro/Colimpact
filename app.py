@@ -17,60 +17,43 @@ import pandas as pd
 import streamlit as st
 
 import colimpact_core as core
+import colimpact_modelo as mod
 import colimpact_plots as plots
 
 st.set_page_config(page_title="ColImpact", page_icon="🏛️", layout="wide")
 
 N_MAX_CAMADAS = 8
 OPCOES_BITOLA = [float(x) for x in core.BITOLAS]
+OPCOES_ESTRIBO = [5.0, 6.3, 8.0, 10.0, 12.5]
 OPCOES_TIPO = ["Retangular", "Circular"]
 OPCOES_APOIO = ["Biapoiado", "Engastado (em balanço)"]
+OPCOES_ARM = ["Por faces (cantos + barras extras)", "Por camadas (avançado)"]
+MODOS_IMPACTO = ["Sem impacto", "Garagem – NBR 6120, Tabela 13", "Via pública/particular – NBR 6120, Tabela 14",
+                 "Livre (definir F e altura)"]
+OPCOES_DIR = ["Fx – paralela ao fluxo dos veículos", "Fy – perpendicular ao fluxo dos veículos"]
+OPCOES_SENT = ["→ para a direita (+)", "← para a esquerda (−)"]
 
 # --------------------------------------------------------------------------------------
-# Exemplos do notebook (seção 1)
+# Valores iniciais (o app abre com um modelo completo para o desenho já aparecer)
 # --------------------------------------------------------------------------------------
-EXEMPLOS = {
-    "Ex. 1 – Seção retangular, biapoiado (com impacto)": dict(
-        tipo="Retangular", apoio="Biapoiado",
-        b=0.30, h=0.30, L=3.4, dLinha=0.0413, n_camadas=2, n_0=2, n_1=2, bitola=20.0,
-        fck=30.0, fyk=500.0, Es=210.0,
-        Nd=1127.9, qd=-5.32, MBd=-10.8, MTd=10.0, QTd=0.0, Fveic=50.0, Pos=0.5,
-    ),
-    "Ex. 2 – Seção circular, em balanço": dict(
-        tipo="Circular", apoio="Engastado (em balanço)",
-        D=0.40, L=4.0, dLinha=0.0475, n_barras_circ=8, bitola=25.0,
-        fck=30.0, fyk=500.0, Es=210.0,
-        Nd=300.0, qd=0.0, MBd=0.0, MTd=0.0, QTd=30.0, Fveic=0.0, Pos=0.5,
-    ),
-}
-PERSONALIZADO = "Personalizado"
-
 DEFAULTS_GERAIS = dict(
-    b=0.30, h=0.30, D=0.40, L=3.4, dLinha=0.04, n_camadas=2, n_barras_circ=8, bitola=20.0,
-    fck=30.0, fyk=500.0, Es=210.0, Nd=0.0, qd=0.0, MBd=0.0, MTd=0.0, QTd=0.0, Fveic=0.0, Pos=0.5,
+    tipo=OPCOES_TIPO[0], apoio=OPCOES_APOIO[0],
+    b=0.30, h=0.30, D=0.40, L=3.4, bitola=20.0, cobrimento=25.0, estribo=6.3, dLinha=0.0413, dLinha_manual=False,
+    arm_modo=OPCOES_ARM[0], n_face_h=0, n_face_b=0, n_camadas=2, n_barras_circ=8,
+    fck=30.0, fyk=500.0, Es=210.0, Nd=1127.9, qd=-5.32, MBd=-10.8, MTd=10.0, QTd=0.0,
+    imp_modo=MODOS_IMPACTO[1], imp_cat="I", imp_caso="sem_protecao", imp_dist=0.0, imp_dir=OPCOES_DIR[1],
+    imp_sent=OPCOES_SENT[0], imp_rampa=False, imp_F_livre=50.0, imp_H_livre=0.5,
     DeltaZ=0.05, tol=1e-4, max_iter=100, lang="Português", fsi_lim=35.0,
 )
 
 ss = st.session_state
 
 
-def aplicar_exemplo():
-    """Preenche os campos com um dos exemplos do notebook."""
-    nome = ss["exemplo"]
-    if nome not in EXEMPLOS:
-        return
-    ex = EXEMPLOS[nome]
-    for k, v in ex.items():
-        ss[k] = v
-    for i in range(N_MAX_CAMADAS):
-        ss[f"n_{i}"] = ex.get(f"n_{i}", 2)
-
-
 if "iniciado" not in ss:
     for k, v in DEFAULTS_GERAIS.items():
         ss[k] = v
-    ss["exemplo"] = list(EXEMPLOS)[0]
-    aplicar_exemplo()
+    for i in range(N_MAX_CAMADAS):
+        ss[f"n_{i}"] = 2
     ss["iniciado"] = True
 
 # O Streamlit apaga o estado de widgets que não são desenhados numa execução (ex.: b e h quando a seção é
@@ -85,6 +68,42 @@ def val(chave):
     return ss[chave] if chave in ss else DEFAULTS_GERAIS.get(chave, 2)
 
 
+def dLinha_atual():
+    """d' (m): automático (cobrimento + estribo + φ/2) ou o valor digitado."""
+    if val("dLinha_manual"):
+        return float(val("dLinha"))
+    return mod.dLinha_de_cobrimento(val("cobrimento"), val("estribo"), val("bitola"))
+
+
+def lista_n_barras():
+    """Barras por camada (seção retangular), a partir do modo de definição escolhido."""
+    if val("arm_modo") == OPCOES_ARM[0]:
+        return mod.camadas_por_faces(val("n_face_h"), val("n_face_b"))
+    return [int(val(f"n_{i}")) for i in range(int(val("n_camadas")))]
+
+
+def impacto_atual():
+    """Força de impacto (com sinal), altura de aplicação e textos de apoio, conforme o modo escolhido."""
+    modo = val("imp_modo")
+    if modo == MODOS_IMPACTO[0]:
+        return dict(F=0.0, H=0.0, F_label="", resumo="Sem impacto de veículo.")
+    if modo == MODOS_IMPACTO[3]:
+        F, H = float(val("imp_F_livre")), float(val("imp_H_livre"))
+        return dict(F=F, H=H, F_label=r"$F_{\mathrm{veic}}$",
+                    resumo=f"Impacto livre: F = {abs(F):.2f} kN ({'→' if F >= 0 else '←'}) a {H:.2f} m da base.")
+    fonte = "garagem" if modo == MODOS_IMPACTO[1] else "via"
+    chave = val("imp_cat") if fonte == "garagem" else val("imp_caso")
+    direcao = "x" if val("imp_dir") == OPCOES_DIR[0] else "y"
+    sentido = 1 if val("imp_sent") == OPCOES_SENT[0] else -1
+    r = mod.impacto_nbr6120(fonte, chave, direcao, sentido, bool(val("imp_rampa")), float(val("imp_dist")))
+    extra = ""
+    if r["fator"] != 1.0:
+        extra = f" (tabela {r['F_tabela']:g} kN × {r['fator']:g})"
+    return dict(F=r["F"], H=r["H"], F_label=rf"$F_{{\mathrm{{veic}},{direcao}}}$",
+                resumo=f"F{direcao} = {r['F_abs']:g} kN{extra} a {r['H']:.2f} m da base, "
+                       f"{'→' if sentido > 0 else '←'}.")
+
+
 # --------------------------------------------------------------------------------------
 # Cabeçalho
 # --------------------------------------------------------------------------------------
@@ -96,11 +115,20 @@ st.caption("Programador: José Matheus de Castro Rodrigues · Última versão do
 with st.expander("Convenções de sinais, hipóteses e referências"):
     st.markdown(
         """
-**Convenções de sinais**
+**Convenções de sinais** (o desenho do modelo, logo abaixo, mostra o sentido real de cada carga)
 
-- **Nd**: (+) compressão  ·  **qd**: (+) para a direita  ·  **Fveic**: (+) para a direita
+- **Nd**: (+) compressão  ·  **qd**: (+) para a direita  ·  **F de impacto**: (+) para a direita
 - **MBd** (momento na base): (+) sentido horário  ·  **MTd** (momento no topo): (+) sentido anti-horário
 - **QTd** (força transversal no topo, só pilar em balanço): (+) para a direita
+
+**Impacto de veículos (ABNT NBR 6120:2019)**
+
+- Categorias das Tabelas 13 (garagens) e 14 (pilares adjacentes a vias). São ações excepcionais (NBR 8681);
+  Fx (paralela ao fluxo) e Fy (perpendicular) **não atuam ao mesmo tempo**: analise uma direção por vez e, para a
+  outra, gire a seção (troque b e h).
+- A força é aplicada como carga concentrada no nó da malha mais próximo da altura H (a norma admite atuação em uma
+  faixa de 25 cm de altura). Perto de descidas de rampa, as forças da Tabela 13 dobram; na Tabela 14 elas decrescem
+  linearmente com a distância do pilar à via, até zero a 10 m.
 
 **Hipóteses do modelo**
 
@@ -114,20 +142,22 @@ with st.expander("Convenções de sinais, hipóteses e referências"):
 
 - ARAÚJO, J. M. *Curso de Concreto Armado*, Vol. 1 e Vol. 3. 4. ed. Rio Grande: Dunas, 2014.
 - ABNT NBR 6118:2023 — Projeto de estruturas de concreto. Rio de Janeiro: ABNT, 2023.
+- ABNT NBR 6120:2019 — Ações para o cálculo de estruturas de edificações. Rio de Janeiro: ABNT, 2019.
 - FERREIRA, P. F. S. *Estacas de Seção Circular Semienterradas Submetidas a Cargas Laterais*. Dissertação (Mestrado), UFPE, Recife.
 - GHALI, A.; NEVILLE, A. *Structural Analysis: A unified classical and matrix approach*. 7. ed. CRC Press, 2017.
 - ZIENKIEWICZ, O. C.; MORGAN, K. *Finite Elements and Approximation*. Dover Publications, 2006.
         """
     )
 
+# Espaço reservado para a pré-visualização: é preenchido depois da barra lateral (que define os valores),
+# mas aparece aqui, no topo da página, redesenhado a cada alteração.
+area_modelo = st.container()
+
 # --------------------------------------------------------------------------------------
 # Barra lateral - dados de entrada
 # --------------------------------------------------------------------------------------
 sb = st.sidebar
 sb.header("Dados de entrada")
-
-sb.selectbox("Carregar exemplo do notebook", list(EXEMPLOS) + [PERSONALIZADO], key="exemplo",
-             on_change=aplicar_exemplo)
 
 sb.subheader("1. Seção e vinculação")
 sb.radio("Tipo de seção", OPCOES_TIPO, key="tipo", horizontal=True)
@@ -137,20 +167,46 @@ sb.subheader("2. Geometria")
 if ss["tipo"] == "Retangular":
     c1, c2 = sb.columns(2)
     c1.number_input("b (m)", min_value=0.05, step=0.01, format="%.3f", key="b")
-    c2.number_input("h (m)", min_value=0.05, step=0.01, format="%.3f", key="h")
+    c2.number_input("h (m)", min_value=0.05, step=0.01, format="%.3f", key="h",
+                    help="h é a dimensão no plano de flexão (a direção das cargas laterais).")
 else:
     sb.number_input("D (m)", min_value=0.05, step=0.01, format="%.3f", key="D")
 sb.number_input("L – comprimento do pilar (m)", min_value=0.5, step=0.1, format="%.2f", key="L")
 
 sb.subheader("3. Armadura longitudinal")
-sb.number_input("d′ – distância do CG da armadura à face (m)", min_value=0.01, step=0.001, format="%.4f", key="dLinha")
-sb.selectbox("Bitola (mm)", OPCOES_BITOLA, key="bitola")
+c1, c2, c3 = sb.columns(3)
+c1.selectbox("Bitola (mm)", OPCOES_BITOLA, key="bitola")
+c2.number_input("Cobrim. (mm)", min_value=10.0, max_value=80.0, step=5.0, format="%.0f", key="cobrimento",
+                help="Cobrimento nominal da armadura de estribo.")
+c3.selectbox("Estribo (mm)", OPCOES_ESTRIBO, key="estribo")
+sb.checkbox("Informar d′ manualmente", key="dLinha_manual")
+if val("dLinha_manual"):
+    sb.number_input("d′ – distância do CG da armadura à face (m)", min_value=0.01, step=0.001, format="%.4f",
+                    key="dLinha")
+else:
+    ss["dLinha"] = dLinha_atual()
+    sb.caption(f"d′ = cobrimento + estribo + φ/2 = {val('cobrimento'):g} + {val('estribo'):g} + "
+               f"{val('bitola') / 2:g} = **{dLinha_atual() * 1000:.1f} mm**")
+
 if ss["tipo"] == "Retangular":
-    sb.number_input("Número de camadas de armadura", min_value=2, max_value=N_MAX_CAMADAS, step=1, key="n_camadas",
-                    help="Camadas igualmente espaçadas entre as coordenadas −h/2+d′ e h/2−d′.")
-    cols = sb.columns(min(int(ss["n_camadas"]), 4))
-    for i in range(int(ss["n_camadas"])):
-        cols[i % len(cols)].number_input(f"Barras – camada {i + 1}", min_value=1, max_value=50, step=1, key=f"n_{i}")
+    sb.radio("Como definir as barras", OPCOES_ARM, key="arm_modo")
+    if ss["arm_modo"] == OPCOES_ARM[0]:
+        sb.caption("Cada face começa com as barras dos cantos (4 no total). Acrescente barras extras em cada face; "
+                   "o desenho acima mostra o resultado (plano de flexão na horizontal).")
+        c1, c2 = sb.columns(2)
+        c1.number_input("Extras – faces esq./dir.", min_value=0, max_value=10, step=1, key="n_face_h",
+                        help="Barras entre os cantos, em CADA uma das faces perpendiculares ao plano de flexão "
+                             "(esquerda e direita no desenho).")
+        c2.number_input("Extras – faces sup./inf.", min_value=0, max_value=N_MAX_CAMADAS - 2, step=1, key="n_face_b",
+                        help="Barras entre os cantos, em CADA uma das faces paralelas ao plano de flexão "
+                             "(superior e inferior no desenho). Cada barra extra cria uma camada intermediária.")
+    else:
+        sb.number_input("Número de camadas de armadura", min_value=2, max_value=N_MAX_CAMADAS, step=1, key="n_camadas",
+                        help="Camadas igualmente espaçadas entre as coordenadas −h/2+d′ e h/2−d′.")
+        cols = sb.columns(min(int(ss["n_camadas"]), 4))
+        for i in range(int(ss["n_camadas"])):
+            cols[i % len(cols)].number_input(f"Barras – camada {i + 1}", min_value=1, max_value=50, step=1,
+                                             key=f"n_{i}")
 else:
     sb.number_input("Número de barras (par, ≥ 4)", min_value=4, max_value=64, step=2, key="n_barras_circ",
                     help="Barras igualmente espaçadas em um círculo de raio D/2 − d′.")
@@ -169,11 +225,34 @@ if ss["apoio"] == OPCOES_APOIO[0]:
 sb.number_input("MTd (kN·m) – momento no topo, (+) anti-horário", step=1.0, format="%.2f", key="MTd")
 if ss["apoio"] == OPCOES_APOIO[1]:
     sb.number_input("QTd (kN) – força transversal no topo, (+) para a direita", step=1.0, format="%.2f", key="QTd")
-sb.number_input("Fveic (kN) – impacto do veículo, (+) para a direita", step=5.0, format="%.2f", key="Fveic",
-                help="Use 0 para analisar o pilar sem impacto.")
-sb.number_input("Posição do impacto (m, a partir da base)", min_value=0.0, step=0.1, format="%.2f", key="Pos",
-                disabled=(ss["Fveic"] == 0),
-                help="Aplicada no nó mais próximo da malha de ΔZ. Recomenda-se múltiplos de 0,1 m.")
+
+sb.subheader("6. Impacto de veículo")
+sb.radio("Ação de impacto", MODOS_IMPACTO, key="imp_modo",
+         help="Escolha a categoria da NBR 6120 ou use 'Livre' para definir a força e a altura.")
+if ss["imp_modo"] == MODOS_IMPACTO[1]:
+    sb.selectbox("Categoria da garagem", list(mod.CATEGORIAS_GARAGEM), key="imp_cat",
+                 format_func=lambda k: f"{k} – {mod.CATEGORIAS_GARAGEM[k]['desc']}")
+elif ss["imp_modo"] == MODOS_IMPACTO[2]:
+    sb.selectbox("Situação do pilar", list(mod.CASOS_VIA), key="imp_caso",
+                 format_func=lambda k: mod.CASOS_VIA[k]["desc"])
+    sb.number_input("Distância do pilar à via (m)", min_value=0.0, max_value=mod.DIST_ZERO_VIA, step=0.5,
+                    format="%.1f", key="imp_dist",
+                    help="As forças da Tabela 14 decrescem linearmente com a distância, sendo zero a 10 m.")
+if ss["imp_modo"] in (MODOS_IMPACTO[1], MODOS_IMPACTO[2]):
+    sb.radio("Direção da força", OPCOES_DIR, key="imp_dir",
+             help="Fx e Fy não atuam ao mesmo tempo. Para analisar a outra direção, gire a seção (troque b e h).")
+    sb.radio("Sentido", OPCOES_SENT, key="imp_sent", horizontal=True)
+    if ss["imp_modo"] == MODOS_IMPACTO[1]:
+        sb.checkbox("Pilar próximo a descida de rampa (forças × 2)", key="imp_rampa")
+elif ss["imp_modo"] == MODOS_IMPACTO[3]:
+    sb.number_input("F (kN), (+) para a direita", step=5.0, format="%.2f", key="imp_F_livre")
+    sb.number_input("Altura de aplicação H (m, a partir da base)", min_value=0.0, step=0.1, format="%.2f",
+                    key="imp_H_livre", help="Aplicada no nó mais próximo da malha de ΔZ. Use múltiplos de 0,1 m.")
+_imp = impacto_atual()
+if ss["imp_modo"] != MODOS_IMPACTO[0]:
+    sb.info(_imp["resumo"])
+if ss["imp_modo"] == MODOS_IMPACTO[2]:
+    sb.caption("Barreira com mais de 50 cm de altura: ela resiste às forças e o pilar não precisa ser verificado.")
 
 with sb.expander("Opções avançadas e gráficos"):
     st.number_input("ΔZ – discretização longitudinal (m)", min_value=0.01, max_value=0.25, step=0.01,
@@ -187,22 +266,79 @@ with sb.expander("Opções avançadas e gráficos"):
 
 
 # --------------------------------------------------------------------------------------
+# Pré-visualização do modelo (redesenhada a cada alteração dos dados)
+# --------------------------------------------------------------------------------------
+def dados_desenho(imp):
+    """Reúne o que os desenhos precisam; devolve (dict, avisos) ou (None, [erro]) se a geometria é inviável."""
+    retangular = ss["tipo"] == "Retangular"
+    d = dLinha_atual()
+    bit = float(val("bitola"))
+    mt = mod.propriedades_materiais(float(val("fck")), float(val("fyk")), float(val("Es")))
+    L = float(val("L"))
+
+    if retangular:
+        b, h, D = float(val("b")), float(val("h")), 0.0
+        if d >= min(b, h) / 2:
+            return None, ["d′ precisa ser menor que metade de b e de h para desenhar a armadura."]
+        n_bar = lista_n_barras()
+        u, v = mod.posicoes_barras("retangular", d, n_barras=n_bar, b=b, h=h)
+    else:
+        b, h, D = 0.0, 0.0, float(val("D"))
+        if d >= D / 2:
+            return None, ["d′ precisa ser menor que D/2 para desenhar a armadura."]
+        n_bar = None
+        u, v = mod.posicoes_barras("circular", d, D=D, n_circ=int(val("n_barras_circ")))
+
+    biapoiado = ss["apoio"] == OPCOES_APOIO[0]
+    base = dict(
+        tipo="retangular" if retangular else "circular", apoio="biapoiado" if biapoiado else "engastado",
+        b=b, h=h, D=D, L=L, dLinha=d, bitola=bit, cobrimento=float(val("cobrimento")), estribo=float(val("estribo")),
+        u=u, v=v, mat=mt,
+        Nd=float(val("Nd")), qd=float(val("qd")), MTd=float(val("MTd")),
+        MBd=float(val("MBd")) if biapoiado else 0.0, QTd=0.0 if biapoiado else float(val("QTd")),
+        F=imp["F"], H=imp["H"], F_label=imp["F_label"],
+    )
+    avisos = mod.verificar_armadura(base["tipo"], u, v, bit, b=b, h=h, D=D, n_barras=n_bar,
+                                    Nd=base["Nd"], fyd=mt["fyd"])
+    base["As_cm2"] = len(u) * mod.area_barra(bit) * 1e4
+    base["rho"] = len(u) * mod.area_barra(bit) / ((b * h) if retangular else np.pi * D**2 / 4)
+    return base, avisos
+
+
+with area_modelo:
+    with st.expander("Pré-visualização do modelo", expanded=True):
+        desenho, avisos_modelo = dados_desenho(_imp)
+        if desenho is None:
+            st.error(avisos_modelo[0])
+        else:
+            col_a, col_b = st.columns([1, 1.15])
+            col_a.pyplot(plots.plot_secao_transversal(desenho))
+            col_b.pyplot(plots.plot_modelo_estrutural(desenho))
+            st.caption(f"**As = {desenho['As_cm2']:.2f} cm²** ({len(desenho['u'])}Ø{val('bitola'):g} mm) · "
+                       f"taxa geométrica ρ = {desenho['rho'] * 100:.2f} % · "
+                       "O sentido de cada carga no desenho vem do sinal informado; os rótulos mostram o módulo. "
+                       f"Os materiais seguem o critério do código (γc = {core.GAMMA_C:g}, γs = {core.GAMMA_S:g}).")
+            for a in avisos_modelo:
+                st.warning(a)
+
+
+# --------------------------------------------------------------------------------------
 # Execução
 # --------------------------------------------------------------------------------------
 def coletar_parametros():
     retangular = ss["tipo"] == "Retangular"
+    imp = impacto_atual()
     p = dict(
         tipo_secao="retangular" if retangular else "circular",
         apoio="biapoiado" if ss["apoio"] == OPCOES_APOIO[0] else "engastado",
-        L=float(val("L")), DeltaZ=float(val("DeltaZ")), dLinha=float(val("dLinha")), bitola=float(val("bitola")),
+        L=float(val("L")), DeltaZ=float(val("DeltaZ")), dLinha=float(dLinha_atual()), bitola=float(val("bitola")),
         fck=float(val("fck")), fyk=float(val("fyk")), Es=float(val("Es")),
         Nd=float(val("Nd")), qd=float(val("qd")), MBd=float(val("MBd")), MTd=float(val("MTd")),
-        QTd=float(val("QTd")), Fveic=float(val("Fveic")),
-        Pos_Fveic=float(val("Pos")) if float(val("Fveic")) != 0 else None,
+        QTd=float(val("QTd")), Fveic=float(imp["F"]),
+        Pos_Fveic=float(imp["H"]) if float(imp["F"]) != 0 else None,
     )
     if retangular:
-        p.update(b=float(val("b")), h=float(val("h")),
-                 n_barras=[int(val(f"n_{i}")) for i in range(int(val("n_camadas")))])
+        p.update(b=float(val("b")), h=float(val("h")), n_barras=lista_n_barras())
     else:
         p.update(D=float(val("D")), n_barras_circ=int(val("n_barras_circ")))
     return p
@@ -265,7 +401,7 @@ if st.button("▶ Calcular", type="primary"):
                 st.code(traceback.format_exc())
 
 if "resultado" not in ss:
-    st.info("Confira os dados na barra lateral (já vêm preenchidos com o Ex. 1 do notebook) e clique em **Calcular**.")
+    st.info("Confira o modelo desenhado acima, ajuste os dados na barra lateral e clique em **Calcular**.")
     st.stop()
 
 if ss["resultado"]["chave"] != chave_atual:
