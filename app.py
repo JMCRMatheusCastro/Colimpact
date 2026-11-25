@@ -1,7 +1,7 @@
 """
 ColImpact (Column Impact Analysis Tool) - versão Streamlit
 
-Programador: José Matheus de Castro Rodrigues  |  Última versão do notebook: 22/09/2026
+Programador: José Matheus de Castro Rodrigues  |  Última versão do código: 22/09/2026
 Recife / PE, Brasil.
 
 Como executar:
